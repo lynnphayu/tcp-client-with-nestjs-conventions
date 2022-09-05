@@ -7,14 +7,14 @@ export interface ClientOptions {
   port: number;
 }
 
-interface ServerResponse<T = any> {
+interface ServerResponse<T = unknown> {
   id: string;
   err?: Error;
   response: T;
   isDisposed: boolean; // TODO: Maybe this is related to chunked data...
 }
 
-interface ResponseCallbackParams<T = any> {
+interface ResponseCallbackParams<T = unknown> {
   err?: Error;
   response: T;
   isDisposed?: boolean;
@@ -22,14 +22,13 @@ interface ResponseCallbackParams<T = any> {
 
 interface Client {
   connect(): Promise<void>;
-  close(): any;
-  send<T = any>(pattern: string, payload: any): Promise<T>;
-  emit(pattern: string, payload: any);
+  close(): unknown;
+  send<T = unknown>(pattern: string, payload: unknown): Promise<T>;
 }
 
 export class ClientTCP implements Client {
   private isConnected: boolean;
-  private socket: net.Socket;
+  private socket?: net.Socket;
   private readonly routingMap: Map<
     string,
     (params: ResponseCallbackParams) => void
@@ -51,27 +50,19 @@ export class ClientTCP implements Client {
   }
 
   private bindEvents(socket) {
-    // socket.on(
-    //   "error",
-    //   (err) => err.code !== "ECONNREFUSED" && this.handleError(err)
-    // );
     socket.on("error", this.handleError);
     socket.on("close", this.handleClose);
   }
 
   private sendMessage(buffer: Uint8Array | string): Promise<void> {
     return new Promise((resolve, reject) =>
-      this.socket.write(buffer, (err) => (err ? reject(err) : resolve()))
+      this.socket!.write(buffer, (err) => (err ? reject(err) : resolve()))
     );
   }
 
   private handleResponse(buffer) {
-    const {
-      id,
-      err,
-      response,
-      isDisposed,
-    } = this.serializer.deserialize<ServerResponse>(buffer);
+    const { id, err, response, isDisposed } =
+      this.serializer.deserialize<ServerResponse>(buffer);
 
     const callback = this.routingMap.get(id);
 
@@ -99,20 +90,17 @@ export class ClientTCP implements Client {
 
   private handleClose() {
     this.isConnected = false;
-    this.socket = null;
+    this.socket = undefined;
   }
 
   public connect(): Promise<void> {
     return new Promise((resolve) => {
-      if (this.isConnected) {
-        return resolve();
-      }
+      if (this.isConnected) return resolve();
 
-      this.socket.connect(this.port, this.host, () => {
+      this.socket!.connect(this.port, this.host, () => {
         this.isConnected = true;
-        this.socket.on("data", this.handleResponse);
-
-        resolve();
+        this.socket!.on("data", this.handleResponse);
+        return resolve();
       });
     });
   }
@@ -122,7 +110,10 @@ export class ClientTCP implements Client {
     this.handleClose();
   }
 
-  public async send<T = any>(pattern: string, payload: any): Promise<T> {
+  public async send<T = unknown, P = unknown>(
+    pattern: string | { cmd: string },
+    payload: P
+  ): Promise<T> {
     await this.connect();
 
     return new Promise(async (resolve, reject) => {
@@ -130,25 +121,15 @@ export class ClientTCP implements Client {
 
       this.routingMap.set(id, ({ err, response }) => {
         this.routingMap.delete(id);
-
         if (err) {
           reject(err);
           return;
         }
-
-        resolve(response);
+        resolve(response as T);
       });
       await this.sendMessage(
         this.serializer.serialize({ id, pattern, data: payload })
       );
     });
-  }
-
-  public async emit(pattern: string, payload: any) {
-    await this.connect();
-
-    await this.sendMessage(
-      this.serializer.serialize({ pattern, data: payload })
-    );
   }
 }
